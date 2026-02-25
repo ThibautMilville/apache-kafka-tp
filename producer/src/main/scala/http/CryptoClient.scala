@@ -23,8 +23,8 @@ final class BinanceRestClient(apiConfig: ApiConfig) extends CryptoClient {
       .get(uri"${apiConfig.baseUrl}/api/v3/ticker/price?symbol=${apiConfig.symbol}")
       .response(asString)
 
-    request.send(backend).body.left.map(_.getMessage).flatMap { body =>
-      parse(body).left.map(_.getMessage).flatMap { json =>
+    request.send(backend).body.left.map(_.toString).flatMap { body =>
+      parse(body).left.map(_.toString).flatMap { json =>
         for {
           symbol <- json.hcursor.get[String]("symbol")
           priceStr <- json.hcursor.get[String]("price")
@@ -34,7 +34,7 @@ final class BinanceRestClient(apiConfig: ApiConfig) extends CryptoClient {
           price = price,
           eventTime = System.currentTimeMillis()
         )
-      }.left.map(_.getMessage)
+      }.left.map(_.toString)
     }
   }
 }

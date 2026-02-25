@@ -2,7 +2,8 @@ package app
 
 import config.SparkJobConfigLoader
 import io.KafkaHdfsPostgresIO
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.api.java.function.VoidFunction2
+import org.apache.spark.sql.{Dataset, Row, SparkSession}
 import org.apache.spark.sql.streaming.Trigger
 import transform.CryptoTransformations
 
@@ -28,12 +29,16 @@ object StreamingJob {
       .trigger(Trigger.ProcessingTime("10 seconds"))
       .start()
 
+    val writeBatchToPostgres = new VoidFunction2[Dataset[Row], java.lang.Long] {
+      override def call(batch: Dataset[Row], batchId: java.lang.Long): Unit = {
+        KafkaHdfsPostgresIO.writeAggToPostgres(batch, cfg)
+      }
+    }
+
     val aggQuery = aggDf.writeStream
       .trigger(Trigger.ProcessingTime("1 minute"))
       .outputMode("update")
-      .foreachBatch { (batch, _) =>
-        KafkaHdfsPostgresIO.writeAggToPostgres(batch, cfg)
-      }
+      .foreachBatch(writeBatchToPostgres)
       .start()
 
     spark.streams.awaitAnyTermination()

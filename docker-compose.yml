@@ -47,7 +47,7 @@ services:
 
   # Spark
   spark-master:
-    image: apache/spark:3.5.1-scala2.12-java11
+    image: apache/spark:3.5.1-scala2.12-java11-python3-ubuntu
     container_name: spark-master
     depends_on:
       - kafka
@@ -58,14 +58,19 @@ services:
       org.apache.spark.deploy.master.Master
     environment:
       SPARK_MASTER_HOST: spark-master
+      POSTGRES_JDBC_URL: jdbc:postgresql://host.docker.internal:5432/crypto
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
     ports:
       - "7077:7077"
-      - "8081:8080"
+      - "8082:8080"
     volumes:
       - ./spark-jobs:/opt/spark/jobs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   spark-worker:
-    image: apache/spark:3.5.1-scala2.12-java11
+    image: apache/spark:3.5.1-scala2.12-java11-python3-ubuntu
     container_name: spark-worker
     depends_on:
       - spark-master
@@ -75,38 +80,37 @@ services:
       spark://spark-master:7077
     environment:
       SPARK_MASTER: spark://spark-master:7077
+      POSTGRES_JDBC_URL: jdbc:postgresql://host.docker.internal:5432/crypto
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
     volumes:
       - ./spark-jobs:/opt/spark/jobs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
-  # PostgreSQL partagé (pipeline + Airflow)
-  postgres:
+  db-migrate:
     image: postgres:15
-    container_name: postgres
-    restart: unless-stopped
+    container_name: db-migrate
+    restart: "no"
     environment:
-      POSTGRES_DB: crypto
-      POSTGRES_USER: crypto
-      POSTGRES_PASSWORD: crypto
-    ports:
-      - "5432:5432"
+      PGPASSWORD: postgres
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init_postgres.sql:ro
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "crypto"]
-      interval: 5s
-      retries: 5
+      - ./scripts:/scripts
+    command: >
+      bash -c "psql -h host.docker.internal -p 5432 -U postgres -d crypto -f /scripts/init_postgres.sql
+      && psql -h host.docker.internal -p 5432 -U postgres -d crypto -f /scripts/seed_postgres.sql"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # Airflow init (création DB + utilisateur admin/admin)
   airflow-init:
     image: apache/airflow:2.7.3
     container_name: airflow-init
     depends_on:
-      postgres:
-        condition: service_healthy
+      - db-migrate
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://crypto:crypto@postgres/crypto
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@host.docker.internal/crypto
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
@@ -119,6 +123,8 @@ services:
       --lastname admin
       --role Admin
       --email admin@example.com"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # Airflow webserver (UI sur localhost:8080)
   airflow-webserver:
@@ -128,13 +134,15 @@ services:
       - airflow-init
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://crypto:crypto@postgres/crypto
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@host.docker.internal/crypto
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
     ports:
       - "8080:8080"
     command: webserver
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # Airflow scheduler
   airflow-scheduler:
@@ -144,14 +152,25 @@ services:
       - airflow-init
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://crypto:crypto@postgres/crypto
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@host.docker.internal/crypto
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./src:/opt/airflow/src
     command: scheduler
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   hadoop_namenode:
   hadoop_datanode:
-  postgres_data:
-

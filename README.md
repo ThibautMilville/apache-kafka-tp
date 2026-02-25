@@ -30,8 +30,8 @@ Principaux composants.
 
 - `producer` : application Scala qui interroge l’API Binance et envoie les ticks JSON vers Kafka.
 - `spark-jobs` : job Spark Structured Streaming qui lit Kafka, nettoie les données, écrit en Parquet sur HDFS et pousse des agrégats dans PostgreSQL.
-- `scripts` : scripts d’initialisation et d’orchestration (`init_kafka_topics.sh`, `init_postgres.sql`, `run_spark_jobs.sh`, `queries_examples.sql`).
-- `docker-compose.yml` : définition des services d’infrastructure (Kafka, HDFS, Spark, PostgreSQL).
+- `scripts` : scripts d’initialisation et d’orchestration (`init_kafka_topics.sh`, `init_postgres.sql`, `seed_postgres.sql`, `run_spark_jobs.sh`, `queries_examples.sql`).
+- `docker-compose.yml` : définition des services d’infrastructure (Kafka, HDFS, Spark, Airflow, tâche de migration `db-migrate`, Grafana). PostgreSQL est fourni par une instance locale existante.
 
 ## Lancement de l’infrastructure
 
@@ -43,12 +43,19 @@ Prérequis installés sur la machine.
 
 Étapes.
 
-1. Se placer dans le répertoire racine du TP.
-2. Démarrer l’infrastructure.
+1. Préparer PostgreSQL local (utilisateur `postgres` / mot de passe `postgres`) et créer la base `crypto` :
+
+```bash
+psql -U postgres -c "CREATE DATABASE crypto;"
+```
+
+2. Se placer dans le répertoire racine du TP puis démarrer l’infrastructure (Kafka, HDFS, Spark, Airflow, db-migrate, Grafana) :
 
 ```bash
 docker compose up -d
 ```
+
+Le service `db-migrate` applique automatiquement les scripts `scripts/init_postgres.sql` (création du schéma et des tables) et `scripts/seed_postgres.sql` (données d’exemple) sur la base `crypto` de ton PostgreSQL local.
 
 3. Créer le topic Kafka `crypto_raw`.
 
@@ -56,10 +63,10 @@ docker compose up -d
 bash scripts/init_kafka_topics.sh
 ```
 
-4. Vérifier que PostgreSQL est initialisé avec le schéma `crypto` et les tables.
+4. Vérifier que PostgreSQL est initialisé avec le schéma `crypto` et les tables (depuis ta machine, pas depuis un conteneur) :
 
 ```bash
-docker compose exec postgres psql -U crypto -d crypto -c "\dt crypto.*"
+psql -U postgres -d crypto -c "\dt crypto.*"
 ```
 
 ## Build et exécution du producteur Scala
@@ -120,10 +127,10 @@ docker compose exec namenode hdfs dfs -ls /datalake/raw/crypto
 docker compose exec namenode hdfs dfs -ls /datalake/clean/crypto
 ```
 
-Consulter les données dans PostgreSQL.
+Consulter les données dans PostgreSQL (instance locale) :
 
 ```bash
-docker compose exec postgres psql -U crypto -d crypto
+psql -U postgres -d crypto
 ```
 
 Exemples de requêtes disponibles dans `scripts/queries_examples.sql`. Exemples.
@@ -154,9 +161,46 @@ ORDER BY window_start DESC
 LIMIT 100;
 ```
 
+## Monitoring (Spark UI et Grafana)
+
+- UI Spark Master : `http://localhost:8082` (statut du cluster, workers, jobs en cours et terminés).
+- Airflow Web UI : `http://localhost:8080` (orchestration des jobs, DAGs).
+- Grafana : `http://localhost:3000` (login par défaut `admin` / `admin`).
+
+Dans Grafana, ajoute une source de données PostgreSQL pointant vers :
+
+- **Host** : `host.docker.internal`
+- **Port** : `5432`
+- **Database** : `crypto`
+- **User / Password** : `postgres` / `postgres`
+
+Tu peux ensuite créer des tableaux de bord pour :
+
+- Visualiser les séries temporelles de prix depuis `crypto.crypto_prices_clean`.
+- Suivre les agrégats 1 minute depuis `crypto.crypto_prices_agg_1min`.
+
+## Objectif pédagogique et livrables
+
+Ce TP couvre toute la chaîne Big Data demandée :
+
+- **Collecte continue des données** : `producer` interroge l’API Binance en continu.
+- **Ingestion temps réel via Kafka** : les ticks sont poussés dans le topic `crypto_raw` sur Kafka.
+- **Traitement distribué avec Apache Spark** : `spark-jobs` lit Kafka en streaming, nettoie et agrège les données.
+- **Data Lake HDFS** : les données brutes et nettoyées sont stockées dans HDFS (`/datalake/raw/crypto` et `/datalake/clean/crypto`).
+- **Nettoyage et structuration** : typage, filtrage et écriture en Parquet dans HDFS.
+- **Chargement dans PostgreSQL** : les agrégats 1 minute sont chargés dans `crypto.crypto_prices_agg_1min` pour l’analyse.
+
+Les livrables attendus du TP sont présents dans ce dépôt :
+
+- **Code source** : `producer`, `spark-jobs`, DAGs Airflow dans `airflow/dags`, scripts dans `scripts`.
+- **Scripts Docker / docker-compose** : `docker-compose.yml` pour l’infrastructure.
+- **Scripts de traitement** : code Scala (producteur + jobs Spark), scripts shell d’orchestration (`run_spark_jobs.sh`, `init_kafka_topics.sh`).
+- **Scripts SQL** : `init_postgres.sql`, `seed_postgres.sql`, `queries_examples.sql`.
+- **README** : ce fichier décrit le sujet, l’architecture et les instructions de lancement pas à pas.
+
 ## Arrêt des services
 
-Pour arrêter l’infrastructure.
+Pour arrêter l’infrastructure :
 
 ```bash
 docker compose down
