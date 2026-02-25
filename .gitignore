@@ -1,0 +1,14 @@
+target/
+project/
+*.iml
+.idea/
+.bloop/
+.metals/
+.vscode/
+logs/
+tmp/
+.DS_Store
+
+# Env et secrets locaux
+*.env
+
