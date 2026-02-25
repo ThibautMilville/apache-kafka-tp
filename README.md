@@ -31,7 +31,7 @@ Principaux composants.
 - `producer` : application Scala qui interroge l’API Binance et envoie les ticks JSON vers Kafka.
 - `spark-jobs` : job Spark Structured Streaming qui lit Kafka, nettoie les données, écrit en Parquet sur HDFS et pousse des agrégats dans PostgreSQL.
 - `scripts` : scripts d’initialisation et d’orchestration (`init_kafka_topics.sh`, `init_postgres.sql`, `seed_postgres.sql`, `run_spark_jobs.sh`, `queries_examples.sql`).
-- `docker-compose.yml` : définition des services d’infrastructure (Kafka, HDFS, Spark, Airflow, tâche de migration `db-migrate`, Grafana). PostgreSQL est fourni par une instance locale existante.
+- `docker-compose.yml` : définition des services d’infrastructure (Kafka, HDFS, Spark, PostgreSQL, Airflow, Grafana).
 
 ## Lancement de l’infrastructure
 
@@ -43,30 +43,24 @@ Prérequis installés sur la machine.
 
 Étapes.
 
-1. Préparer PostgreSQL local (utilisateur `postgres` / mot de passe `postgres`) et créer la base `crypto` :
-
-```bash
-psql -U postgres -c "CREATE DATABASE crypto;"
-```
-
-2. Se placer dans le répertoire racine du TP puis démarrer l’infrastructure (Kafka, HDFS, Spark, Airflow, db-migrate, Grafana) :
+1. Se placer dans le répertoire racine du TP puis démarrer l’infrastructure (Kafka, HDFS, Spark, PostgreSQL, Airflow, Grafana) :
 
 ```bash
 docker compose up -d
 ```
 
-Le service `db-migrate` applique automatiquement les scripts `scripts/init_postgres.sql` (création du schéma et des tables) et `scripts/seed_postgres.sql` (données d’exemple) sur la base `crypto` de ton PostgreSQL local.
+Le service `postgres` applique automatiquement les scripts `scripts/init_postgres.sql` (création du schéma et des tables) et `scripts/seed_postgres.sql` (données d’exemple) dans la base `crypto` interne au docker-compose.
 
-3. Créer le topic Kafka `crypto_raw`.
+2. Créer le topic Kafka `crypto_raw`.
 
 ```bash
 bash scripts/init_kafka_topics.sh
 ```
 
-4. Vérifier que PostgreSQL est initialisé avec le schéma `crypto` et les tables (depuis ta machine, pas depuis un conteneur) :
+3. Vérifier que PostgreSQL est initialisé avec le schéma `crypto` et les tables (dans le conteneur `postgres`) :
 
 ```bash
-psql -U postgres -d crypto -c "\dt crypto.*"
+docker compose exec postgres psql -U crypto -d crypto -c "\dt crypto.*"
 ```
 
 ## Build et exécution du producteur Scala
@@ -127,10 +121,10 @@ docker compose exec namenode hdfs dfs -ls /datalake/raw/crypto
 docker compose exec namenode hdfs dfs -ls /datalake/clean/crypto
 ```
 
-Consulter les données dans PostgreSQL (instance locale) :
+Consulter les données dans PostgreSQL (service `postgres` du docker-compose) :
 
 ```bash
-psql -U postgres -d crypto
+docker compose exec postgres psql -U crypto -d crypto
 ```
 
 Exemples de requêtes disponibles dans `scripts/queries_examples.sql`. Exemples.
@@ -161,23 +155,69 @@ ORDER BY window_start DESC
 LIMIT 100;
 ```
 
-## Monitoring (Spark UI et Grafana)
+## Monitoring (Spark UI, Airflow et Grafana)
 
 - UI Spark Master : `http://localhost:8082` (statut du cluster, workers, jobs en cours et terminés).
-- Airflow Web UI : `http://localhost:8080` (orchestration des jobs, DAGs).
+- Airflow Web UI : `http://localhost:8083` (orchestration des jobs, DAGs).
 - Grafana : `http://localhost:3000` (login par défaut `admin` / `admin`).
 
-Dans Grafana, ajoute une source de données PostgreSQL pointant vers :
+Dans Grafana (qui tourne aussi dans le docker-compose), ajoute une source de données PostgreSQL pointant vers :
 
-- **Host** : `host.docker.internal`
+- **Host** : `postgres`
 - **Port** : `5432`
 - **Database** : `crypto`
-- **User / Password** : `postgres` / `postgres`
+- **User / Password** : `crypto` / `crypto`
 
 Tu peux ensuite créer des tableaux de bord pour :
 
 - Visualiser les séries temporelles de prix depuis `crypto.crypto_prices_clean`.
 - Suivre les agrégats 1 minute depuis `crypto.crypto_prices_agg_1min`.
+
+## Validation du workflow de bout en bout
+
+Pour démontrer que la consigne est remplie de bout en bout :
+
+1. **Collecte temps réel + Kafka**
+   - Lancer le producteur depuis l’hôte :
+
+   ```bash
+   cd producer
+   KAFKA_BOOTSTRAP_SERVERS=localhost:9092 sbt run
+   ```
+
+   - Vérifier dans Kafka (optionnel) que le topic `crypto_raw` reçoit des messages (via `kafka-console-consumer` ou les métriques Spark ci-dessous).
+
+2. **Traitement distribué avec Spark + HDFS + PostgreSQL**
+   - Builder le job Spark une fois :
+
+   ```bash
+   cd spark-jobs
+   sbt package
+   cd ..
+   ```
+
+   - Lancer le job de streaming :
+
+   ```bash
+   bash scripts/run_spark_jobs.sh
+   ```
+
+   - Dans l’UI Spark (`http://localhost:8082`), vérifier :
+     - Une application `CryptoStreamingJob` en **RUNNING**.
+     - Des lignes lues depuis Kafka et écrites par les requêtes de streaming.
+
+   - Dans l’UI HDFS (`http://localhost:9870` → *Browse the filesystem*), vérifier :
+     - Présence de fichiers sous `/datalake/raw/crypto` (brut).
+     - Présence de fichiers sous `/datalake/clean/crypto` (nettoyé / structuré).
+
+   - Dans PostgreSQL (via `docker compose exec postgres psql -U crypto -d crypto`), vérifier :
+     - Que les tables `crypto.crypto_prices_clean` et `crypto.crypto_prices_agg_1min` contiennent des lignes.
+
+3. **Visualisation / analyse avec Grafana**
+   - Se connecter à Grafana (`http://localhost:3000`), créer une datasource PostgreSQL sur `postgres:5432`, base `crypto`, user `crypto`.
+   - Créer un dashboard avec par exemple :
+     - Une série temporelle sur `crypto.crypto_prices_clean` (timestamp vs price).
+     - Une série temporelle sur `crypto.crypto_prices_agg_1min` (close_price, high/low, etc.).
 
 ## Objectif pédagogique et livrables
 

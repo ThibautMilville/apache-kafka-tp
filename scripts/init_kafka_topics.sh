@@ -1,4 +1,5 @@
-set -euo pipefail
+#!/usr/bin/env bash
+set -eu
 
 docker compose exec kafka kafka-topics \
   --create \
@@ -7,4 +8,3 @@ docker compose exec kafka kafka-topics \
   --bootstrap-server kafka:9092 \
   --partitions 1 \
   --replication-factor 1
-
